@@ -51,7 +51,7 @@ new aws.iam.RolePolicy("adapter-policy", {
 // 3. The Lambda: Using the AWS Data Wrangler Layer (AWS SDK for Pandas)
 const pandasLayerArn = `arn:aws:lambda:${region}:336392948345:layer:AWSSDKPandas-Python311:12`;
 
-const adapterLambda = new aws.lambda.Function("settlement-adapter", {
+const adyenAdapterLambda = new aws.lambda.Function("adyen-adapter", {
   role: lambdaRole.arn,
   runtime: "python3.11",
   handler: "index.handler",
@@ -59,7 +59,7 @@ const adapterLambda = new aws.lambda.Function("settlement-adapter", {
   timeout: 900,
   layers: [pandasLayerArn],
   code: new pulumi.asset.AssetArchive({
-    "index.py": new pulumi.asset.FileAsset("./adapter.py"),
+    "index.py": new pulumi.asset.FileAsset("./adapters/adyen/index.py"),
   }),
   environment: {
     variables: {
@@ -75,18 +75,19 @@ new aws.s3.BucketNotification(
     bucket: rawBucket.id,
     lambdaFunctions: [
       {
-        lambdaFunctionArn: adapterLambda.arn,
+        lambdaFunctionArn: adyenAdapterLambda.arn,
         events: ["s3:ObjectCreated:*"],
+        filterPrefix: "acquirer=adyen/",
         filterSuffix: ".csv",
       },
     ],
   },
-  { dependsOn: [adapterLambda] },
+  { dependsOn: [adyenAdapterLambda] },
 );
 
-new aws.lambda.Permission("s3-trigger-permission", {
+new aws.lambda.Permission("s3-adyen-trigger-permission", {
   action: "lambda:InvokeFunction",
-  function: adapterLambda.name,
+  function: adyenAdapterLambda.name,
   principal: "s3.amazonaws.com",
   sourceArn: rawBucket.arn,
 });
@@ -199,8 +200,7 @@ const aggregationStateMachine = new aws.sfn.StateMachine(
               QueryString: athenaQuery,
               WorkGroup: "primary",
               ResultConfiguration: {
-                // Athena will automatically write the final CSV output to this path
-                OutputLocation: `s3://${bucketName}/athena-output/`,
+                OutputLocation: `s3://${bucketName}/output/aggregates/acquirer=adyen/`,
               },
             },
             End: true,
@@ -253,8 +253,7 @@ const feeStateMachine = new aws.sfn.StateMachine(
               QueryString: athenaQueryFees,
               WorkGroup: "primary",
               ResultConfiguration: {
-                // Athena will automatically write the final CSV output to this path
-                OutputLocation: `s3://${bucketName}/fees-output/`,
+                OutputLocation: `s3://${bucketName}/output/fees/acquirer=adyen/`,
               },
             },
             End: true,
