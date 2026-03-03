@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../dist/out-tsc",
+    "module": "CommonJS",
+    "target": "ES2022",
+    "types": ["node"],
+    "sourceMap": true,
+    "strict": true,
+  },
+  "include": [
+    "unit1-infra/**/*.ts",
+    "unit2-seed/**/*.ts",
+    "unit3-transform/**/*.ts",
+  ],
+  "exclude": ["node_modules", "dist"],
+}

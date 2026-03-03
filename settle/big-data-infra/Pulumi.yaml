@@ -1,0 +1,6 @@
+name: settle-infra-big-data
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: Settlement pipeline infrastructure — Athena

@@ -1,0 +1,6 @@
+name: settle-infra
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: Settlement pipeline infrastructure — VPC, RDS PostgreSQL, Bastion (SSM)
