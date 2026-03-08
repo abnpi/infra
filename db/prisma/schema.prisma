@@ -4,6 +4,23 @@
 // Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
+enum VirtualAccountOwnerType {
+  MERCHANT
+  INFINITE
+}
+
+model VirtualAccountOwner {
+  id         String                  @id @default(uuid())
+  merchantId String // Mocked UUID - will eventually come from InfinitePay DB
+  reference  String // Refers to ID from settlement file
+  name       String
+  type       VirtualAccountOwnerType
+
+  virtualAccounts VirtualAccount[]
+
+  @@map("virtual_account_owners")
+}
+
 // Mocking Merchant to satisfy relations
 model Merchant {
   id                 Int                 @id @default(autoincrement())
@@ -24,12 +41,14 @@ enum VirtualAccountType {
 }
 
 model VirtualAccount {
-  id             String             @id @default(uuid())
+  id             String               @id @default(uuid())
   merchantId     Int? // Remains null for SYSTEM_PAYOUT_TRANSIT and INFINITE accounts
-  merchant       Merchant?          @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  merchant       Merchant?            @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  ownerId        String?
+  owner          VirtualAccountOwner? @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   type           VirtualAccountType
-  currency       String             @db.Char(3)
-  currentBalance Decimal            @default(0.00) @db.Decimal(19, 4)
+  currency       String               @db.Char(3)
+  currentBalance Decimal              @default(0.00) @db.Decimal(19, 4)
 
   entries LedgerEntry[]
 
