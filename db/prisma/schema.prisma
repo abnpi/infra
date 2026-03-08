@@ -1,0 +1,127 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+// Mocking Merchant to satisfy relations
+model Merchant {
+  id                 Int                 @id @default(autoincrement())
+  virtualAccounts    VirtualAccount[]
+  settlementRequests SettlementRequest[]
+
+  @@map("merchants")
+}
+
+enum VirtualAccountType {
+  MERCHANT_INBOUND
+  MERCHANT_FEES
+  MERCHANT_CHARGEBACKS
+  MERCHANT_CB_REVERSAL
+  MERCHANT_SETTLEMENT
+  INFINITE_SETTLEMENT
+  SYSTEM_PAYOUT_TRANSIT // The platform liability vault for funds in flight
+}
+
+model VirtualAccount {
+  id             String             @id @default(uuid())
+  merchantId     Int? // Remains null for SYSTEM_PAYOUT_TRANSIT and INFINITE accounts
+  merchant       Merchant?          @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  type           VirtualAccountType
+  currency       String             @db.Char(3)
+  currentBalance Decimal            @default(0.00) @db.Decimal(19, 4)
+
+  entries LedgerEntry[]
+
+  @@unique([merchantId, type, currency])
+  @@map("virtual_accounts")
+}
+
+enum TransactionStatus {
+  PENDING
+  SETTLED
+  REFUSED
+  FAILED
+}
+
+// The Stateful Workflow Wrapper
+model LedgerTransaction {
+  id              String            @id @default(uuid())
+  transactionType String // e.g., "SETTLEMENT_PAYOUT", "SETTLEMENT_REVERSAL"
+  referenceId     String?
+  description     String?
+  status          TransactionStatus @default(PENDING)
+  currency        String            @db.Char(3)
+
+  // Link to the external Settlement Request (a single request can own multiple transactions)
+  settlementRequestId String?
+  settlementRequest   SettlementRequest? @relation(fields: [settlementRequestId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries LedgerEntry[]
+
+  @@index([referenceId])
+  @@index([status])
+  @@index([settlementRequestId])
+  @@map("ledger_transactions")
+}
+
+enum EntryDirection {
+  CREDIT
+  DEBIT
+}
+
+// The Immutable Financial Truth
+model LedgerEntry {
+  id String @id @default(uuid())
+
+  transactionId String
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+
+  virtualAccountId String
+  virtualAccount   VirtualAccount @relation(fields: [virtualAccountId], references: [id], onDelete: Restrict)
+
+  direction    EntryDirection
+  amount       Decimal        @db.Decimal(19, 4)
+  currency     String         @db.Char(3)
+  balanceAfter Decimal        @db.Decimal(19, 4)
+
+  createdAt DateTime @default(now()) // NO updatedAt allowed here
+
+  @@index([virtualAccountId])
+  @@index([transactionId])
+  @@index([createdAt])
+  @@index([currency])
+  @@map("ledger_entries")
+}
+
+enum SettlementStatus {
+  PENDING
+  SUBMITTED
+  COMPLETED
+  REJECTED
+  FAILED
+}
+
+// The External Banking IO State
+model SettlementRequest {
+  id String @id @default(uuid())
+
+  merchantId Int?
+  merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+
+  amount   Decimal          @db.Decimal(19, 4)
+  currency String           @db.Char(3)
+  status   SettlementStatus @default(PENDING)
+
+  transactions LedgerTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([merchantId])
+  @@index([status])
+  @@map("settlement_requests")
+}

@@ -1,0 +1,1842 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Multi-Tenancy
+model Tenant {
+  id        Int      @id @default(autoincrement())
+  name      String
+  subdomain String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                  User[]
+  merchants              Merchant[]
+  partners               Partner[]
+  businesses             Business[]
+  settings               Setting[]
+  authTokens             RefreshToken[]
+  ongoingMonitoringCases OngoingMonitoringCase[]
+
+  @@map("tenants")
+}
+
+model Setting {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  key       String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@map("settings")
+}
+
+// User Management
+model User {
+  id          Int         @id @default(autoincrement())
+  tenantId    Int?
+  userName    String
+  email       String
+  password    String
+  salt        String
+  merchantId  Int?
+  contactName String?
+  addedById   Int?
+  sentTo      String?
+  dateAdded   DateTime?
+  status      UserStatus? @default(PENDING)
+  firstName   String?
+  lastName    String?
+  phone       String?     @db.VarChar(50)
+  avatar      String?
+  lastLogin   DateTime?
+  createdAt   DateTime    @default(now())
+  createdBy   Int?
+  updatedAt   DateTime    @updatedAt
+  updatedBy   Int?
+  deletedAt   DateTime?
+  deletedBy   Int?
+
+  tenant                              Tenant?                           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  merchant                            Merchant?                         @relation("UserMerchant", fields: [merchantId], references: [id], onDelete: SetNull)
+  addedByUser                         User?                             @relation("UserAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+  usersAdded                          User[]                            @relation("UserAddedBy")
+  roles                               UserRole[]
+  merchantUsers                       MerchantUser[]
+  partners                            PartnerUser[]
+  authTokens                          RefreshToken[]
+  passwordResetToken                  PasswordResetToken?
+  monitoringStatusChanges             OngoingMonitoringStatusHistory[]
+  acknowledgedAlerts                  OngoingMonitoringAlert[]          @relation("AlertAcknowledgedBy")
+  resolvedAlerts                      OngoingMonitoringAlert[]          @relation("AlertResolvedBy")
+  createdApplications                 MerchantApplication[]             @relation("ApplicationCreatedBy")
+  updatedApplications                 MerchantApplication[]             @relation("ApplicationUpdatedBy")
+  merchantApplicationStatusChanges    MerchantApplicationStatusChange[]
+  createdMerchantApplicationDocuments MerchantApplicationDocument[]     @relation("MerchantApplicationDocumentCreatedBy")
+  createdPreQualifications            PreQualification[]                @relation("PreQualCreatedBy")
+  updatedPreQualifications            PreQualification[]                @relation("PreQualUpdatedBy")
+  preQualificationStatusChanges       PreQualificationStatusChange[]    @relation("PreQualStatusChangeCreatedBy")
+  rolesCreated                        Role[]                            @relation("RoleCreatedBy")
+  rolesUpdated                        Role[]                            @relation("RoleUpdatedBy")
+  rolesDeleted                        Role[]                            @relation("RoleDeletedBy")
+  userRolesCreated                    UserRole[]                        @relation("UserRoleCreatedBy")
+  userRolesUpdated                    UserRole[]                        @relation("UserRoleUpdatedBy")
+  rolePermissionsCreated              RolePermission[]                  @relation("RolePermissionCreatedBy")
+  rolePermissionsUpdated              RolePermission[]                  @relation("RolePermissionUpdatedBy")
+
+  @@unique([email, tenantId])
+  @@index([tenantId])
+  @@index([merchantId])
+  @@index([addedById])
+  @@map("users")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
+}
+
+model Role {
+  id                    Int            @id @default(autoincrement())
+  name                  String
+  description           String?        @db.Text
+  hierarchyLevel        HierarchyLevel @default(PROVISIONER)
+  specificAccount       Boolean        @default(true)
+  distributionPartnerId String?
+  customerId            String?
+  partnerOfCustomerId   String?
+  isSystem              Boolean        @default(false)
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  createdBy             Int?
+  updatedBy             Int?
+  deletedAt             DateTime?
+  deletedBy             Int?
+
+  users         UserRole[]
+  permissions   RolePermission[]
+  createdByUser User?            @relation("RoleCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User?            @relation("RoleUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+  deletedByUser User?            @relation("RoleDeletedBy", fields: [deletedBy], references: [id], onDelete: SetNull)
+
+  @@index([hierarchyLevel])
+  @@index([distributionPartnerId])
+  @@index([customerId])
+  @@index([partnerOfCustomerId])
+  @@index([isSystem])
+  @@index([createdBy])
+  @@index([updatedBy])
+  @@index([deletedBy])
+  @@map("roles")
+}
+
+model UserRole {
+  userId Int
+  roleId Int
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+
+  createdByUser User? @relation("UserRoleCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User? @relation("UserRoleUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@id([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@index([createdBy])
+  @@index([updatedBy])
+  @@map("user_roles")
+}
+
+// Permission System
+model Permission {
+  id       Int              @id @default(autoincrement())
+  code     String           @unique
+  type     PermissionType
+  parentId Int?
+  parent   Permission?      @relation("PermissionHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Permission[]     @relation("PermissionHierarchy")
+  roles    RolePermission[]
+
+  @@index([parentId])
+  @@index([type])
+  @@index([code])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+  createdAt    DateTime @default(now())
+  createdBy    Int?
+  updatedAt    DateTime @updatedAt
+  updatedBy    Int?
+
+  role          Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdByUser User?      @relation("RolePermissionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  updatedByUser User?      @relation("RolePermissionUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@id([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@index([createdBy])
+  @@index([updatedBy])
+  @@map("role_permissions")
+}
+
+enum PermissionType {
+  CATEGORY
+  MODULE
+  ACTION
+}
+
+// Audit Log
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  event     String   @db.VarChar(60)
+  entity    String   @db.VarChar(50)
+  entityId  Int
+  user      Int?
+  details   Json
+  ipAddress String   @db.VarChar(50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+// Sage Integration
+model SageIntegration {
+  id     Int    @id @default(autoincrement())
+  sageId String @db.Char(32)
+  code   Int
+  name   String
+
+  @@map("sage_integrations")
+}
+
+// Authentication
+model RefreshToken {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  tenantId   Int
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  userAgent  String?
+  ipAddress  String?
+
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tenantId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+// Business Entities
+model Business {
+  id                        Int           @id @default(autoincrement())
+  tenantId                  Int?
+  legalName                 String
+  tradingName               String
+  contact                   Int
+  country                   String?       @db.Char(2)
+  mcc                       String?
+  type                      BusinessType?
+  language                  String        @db.Char(6)
+  currency                  String        @db.Char(3)
+  website                   String?
+  taCode                    String?
+  chargeableAccountBankName String?
+  settlementAccountBankName String?
+  charityNumber             String?
+  createdAt                 DateTime      @default(now())
+  createdBy                 Int?
+  updatedAt                 DateTime      @updatedAt
+  updatedBy                 Int?
+  deletedAt                 DateTime?
+  deletedBy                 Int?
+
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contactRel          Contact              @relation(fields: [contact], references: [id])
+  merchants           Merchant[]
+  partners            Partner[]
+  accounts            Account[]
+  worldPayInformation WorldPayInformation?
+  vat                 VAT?
+
+  @@index([tenantId])
+  @@index([contact])
+  @@map("businesses")
+}
+
+model WorldPayInformation {
+  id                                    Int       @id @default(autoincrement())
+  businessId                            Int       @unique
+  merchantNumber                        String?
+  whiteboardFrame                       String?
+  membershipNumber                      String?
+  acceptFullPayment                     Boolean   @default(false)
+  percentageViaCard                     Decimal?  @db.Decimal(5, 2)
+  totalCardTurnover                     Decimal?  @db.Decimal(14, 2)
+  creditCardTurnover                    Decimal?  @db.Decimal(14, 2)
+  goodsServicesOwned                    Boolean   @default(false)
+  sizeOfDepositTaken                    String?
+  acceptDepositPayment                  Boolean   @default(false)
+  stocksHeldAnyAddress                  Boolean   @default(false)
+  averageCardTransaction                Decimal?  @db.Decimal(14, 2)
+  percentageDepositTaken                Decimal?  @db.Decimal(5, 2)
+  thirdPartyProviderName                String?
+  levyChargeForGuarantees               Boolean   @default(false)
+  levyChargeForMembership               Boolean   @default(false)
+  percentageOfCardTurnover              Decimal?  @db.Decimal(5, 2)
+  averageLengthOfGuarantees             String?
+  averageLengthOfMembership             String?
+  percentageOfGoodsReturned             Decimal?  @db.Decimal(5, 2)
+  totalAnnualCompanyTurnover            Decimal?  @db.Decimal(14, 2)
+  averageTimeFullPaymentTaken           String?
+  percentageOfCompanyTurnover           Decimal?  @db.Decimal(5, 2)
+  existingAcquirerRelationship          Boolean   @default(false)
+  averageTimeAdvancePaymentTaken        String?
+  guaranteesWarrantiesThirdParty        Boolean   @default(false)
+  percentagePaymentPriorToDelivery      Decimal?  @db.Decimal(5, 2)
+  settlementAccountSameAsChargeable     Boolean   @default(true)
+  averageTimeFullPaymentDeliveryTaken   String?
+  percentageOfCardTurnoverForMembership Decimal?  @db.Decimal(5, 2)
+  createdAt                             DateTime  @default(now())
+  createdBy                             Int?
+  updatedAt                             DateTime  @updatedAt
+  updatedBy                             Int?
+  deletedAt                             DateTime?
+  deletedBy                             Int?
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("worldpay_information")
+}
+
+model VAT {
+  id                 Int       @id @default(autoincrement())
+  businessId         Int       @unique
+  vatNumber          String?
+  vatRegistered      Boolean   @default(false)
+  vatRate            Decimal?  @db.Decimal(5, 2)
+  vatExempt          Boolean   @default(false)
+  vatExemptionReason String?
+  createdAt          DateTime  @default(now())
+  createdBy          Int?
+  updatedAt          DateTime  @updatedAt
+  updatedBy          Int?
+  deletedAt          DateTime?
+  deletedBy          Int?
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("vat_records")
+}
+
+enum PartnerHierarchyLevel {
+  PROVISIONER
+  DISTRIBUTION_PARTNER
+  CUSTOMER
+  PARTNER_OF_CUSTOMER
+}
+
+enum BusinessType {
+  PRIVATE_LIMITED_COMPANY
+  PUBLIC_LIMITED_COMPANY
+  LIMITED_LIABILITY_PARTNERSHIP
+  PARTNERSHIP
+  SOLE_TRADER
+  CHARITY_OR_NOT_FOR_PROFIT
+}
+
+model Account {
+  id            Int         @id @default(autoincrement())
+  partner       Int?
+  business      Int?
+  outlet        Int?
+  accountName   String
+  bankName      String
+  currency      String      @db.Char(3)
+  accountNumber String?     @db.VarChar(50)
+  sortCode      String?     @db.VarChar(20)
+  iban          String?     @db.VarChar(50)
+  bic           String?     @db.VarChar(50)
+  type          AccountType
+  createdAt     DateTime    @default(now())
+  createdBy     Int?
+  updatedAt     DateTime    @updatedAt
+  updatedBy     Int?
+  validatedAt   DateTime?
+  validatedBy   Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+
+  partnerRel  Partner?  @relation(fields: [partner], references: [id], onDelete: Cascade)
+  businessRel Business? @relation(fields: [business], references: [id])
+
+  @@unique([partner, currency, type])
+  @@index([partner])
+  @@index([partner, currency])
+  @@index([business])
+  @@map("accounts")
+}
+
+enum AccountType {
+  SETTLEMENT_ACCOUNT
+  CHARGEABLE_ACCOUNT
+  ALL
+}
+
+// Contact Management
+model Contact {
+  id          Int       @id @default(autoincrement())
+  email       String
+  phone       String?   @db.VarChar(50)
+  mobile      String?   @db.VarChar(50)
+  firstName   String
+  middleName  String?
+  lastName    String
+  title       String?   @db.VarChar(20)
+  nationality String?
+  dateOfBirth DateTime?
+  ordinal     Int?
+  createdAt   DateTime  @default(now())
+  createdBy   Int?
+  updatedAt   DateTime  @updatedAt
+  updatedBy   Int?
+  deletedAt   DateTime?
+  deletedBy   Int?
+
+  businesses Business[]
+  merchants  Merchant[]
+  addresses  Address[]
+  principals Principal[]
+  roles      PartnerContact[]
+
+  partnerAsPrimary Partner[] @relation("PartnerPrimaryContact")
+  partnerAsBilling Partner[] @relation("PartnerBillingContact")
+  partnerAsService Partner[] @relation("PartnerServiceContact")
+
+  @@map("contacts")
+}
+
+model PartnerContact {
+  partnerId Int
+  contactId Int
+  role      PartnerContactRole
+  position  String?            @db.VarChar(100)
+  createdAt DateTime           @default(now())
+  createdBy Int?
+  updatedAt DateTime           @updatedAt
+  updatedBy Int?
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@id([partnerId, contactId, role])
+  @@index([partnerId])
+  @@index([contactId])
+  @@index([partnerId, role])
+  @@map("partner_contacts")
+}
+
+enum PartnerContactRole {
+  PRIMARY
+  BILLING
+  SERVICE
+}
+
+model Address {
+  id              Int       @id @default(autoincrement())
+  contact         Int
+  addressLine1    String
+  addressLine2    String?
+  townOrCity      String
+  addressCode     String
+  county          String?
+  country         String
+  monthsAtAddress Int?
+  createdAt       DateTime  @default(now())
+  createdBy       Int?
+  updatedAt       DateTime  @updatedAt
+  updatedBy       Int?
+  deletedAt       DateTime?
+  deletedBy       Int?
+
+  contactRel Contact @relation(fields: [contact], references: [id])
+
+  partnerAsRegistered Partner[] @relation("PartnerRegisteredAddress")
+  partnerAsTrading    Partner[] @relation("PartnerTradingAddress")
+
+  @@index([contact])
+  @@map("addresses")
+}
+
+model Principal {
+  id                  Int       @id @default(autoincrement())
+  contact             Int
+  position            String
+  isBeneficialOwner   Boolean
+  percentageOwnership Decimal?  @db.Decimal(5, 2)
+  createdAt           DateTime  @default(now())
+  createdBy           Int?
+  updatedAt           DateTime  @updatedAt
+  updatedBy           Int?
+  deletedAt           DateTime?
+  deletedBy           Int?
+
+  contactRel Contact @relation(fields: [contact], references: [id])
+
+  @@index([contact])
+  @@map("principals")
+}
+
+model Merchant {
+  id             Int       @id @default(autoincrement())
+  tenantId       Int?
+  risk           String?
+  partner        Int?
+  accountNumber  String    @unique @db.Char(10)
+  accountManager Int?
+  business       Int?
+  contact        Int?
+  createdAt      DateTime  @default(now())
+  createdBy      Int?
+  updatedAt      DateTime  @updatedAt
+  updatedBy      Int?
+  deletedAt      DateTime?
+  deletedBy      Int?
+
+  tenant                 Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  businessRel            Business?               @relation(fields: [business], references: [id])
+  contactRel             Contact?                @relation(fields: [contact], references: [id])
+  partnerRel             Partner?                @relation(fields: [partner], references: [id])
+  users                  MerchantUser[]
+  userMerchants          User[]                  @relation("UserMerchant")
+  application            MerchantApplication?
+  serviceProducts        ServiceProduct[]
+  invoices               Invoice[]
+  ongoingMonitoringCases OngoingMonitoringCase[]
+
+  @@index([partner])
+  @@index([business])
+  @@index([contact])
+  @@index([tenantId, partner])
+  @@map("merchants")
+}
+
+model MerchantUser {
+  merchant Int
+  user     Int
+
+  merchantRel Merchant @relation(fields: [merchant], references: [id])
+  userRel     User     @relation(fields: [user], references: [id])
+
+  @@id([merchant, user])
+  @@index([merchant])
+  @@index([user])
+  @@map("merchant_users")
+}
+
+model PreQualification {
+  id Int @id @default(autoincrement())
+
+  distributionPartner   Partner? @relation("PreQualDistributionPartner", fields: [distributionPartnerId], references: [id])
+  distributionPartnerId Int?
+
+  customer   Partner? @relation("PreQualCustomer", fields: [customerId], references: [id])
+  customerId Int?
+
+  partnerOfCustomer   Partner? @relation("PreQualPartnerOfCustomer", fields: [partnerOfCustomerId], references: [id])
+  partnerOfCustomerId Int?
+
+  country     String?                 @db.VarChar(10)
+  serviceType ApplicationServiceType?
+  outletCount Int?
+
+  productOffer     ProductOffer? @relation(fields: [productOfferId], references: [id])
+  productOfferId   Int?
+  contractTerm     String?       @db.VarChar(50)
+  selectedProducts Json?
+
+  status        PreQualificationStatus         @default(DRAFT)
+  statusChanges PreQualificationStatusChange[]
+  outlets       PreQualificationOutlet[]
+
+  merchantApplication MerchantApplication?
+
+  createdAt       DateTime @default(now())
+  createdByUser   User     @relation("PreQualCreatedBy", fields: [createdByUserId], references: [id])
+  createdByUserId Int
+
+  updatedAt       DateTime @updatedAt
+  updatedByUser   User     @relation("PreQualUpdatedBy", fields: [updatedByUserId], references: [id])
+  updatedByUserId Int
+
+  @@index([status])
+  @@index([distributionPartnerId])
+  @@index([customerId])
+  @@index([partnerOfCustomerId])
+  @@index([productOfferId])
+  @@map("pre_qualifications")
+}
+
+enum PreQualificationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+model PreQualificationOutlet {
+  id                 Int               @id @default(autoincrement())
+  preQualificationId Int
+  outletNumber       Int
+  serviceType        OutletServiceType
+
+  preQualification PreQualification @relation(fields: [preQualificationId], references: [id], onDelete: Cascade)
+
+  @@unique([preQualificationId, outletNumber])
+  @@index([preQualificationId])
+  @@map("pre_qualification_outlets")
+}
+
+model PreQualificationStatusChange {
+  id                 Int                    @id @default(autoincrement())
+  preQualificationId Int
+  status             PreQualificationStatus
+
+  preQualification PreQualification @relation(fields: [preQualificationId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime @default(now())
+  createdByUser   User     @relation("PreQualStatusChangeCreatedBy", fields: [createdByUserId], references: [id])
+  createdByUserId Int
+
+  @@index([preQualificationId])
+  @@map("pre_qualification_status_changes")
+}
+
+model MerchantApplication {
+  id Int @id @default(autoincrement())
+
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  merchantId Int      @unique
+
+  preQualification   PreQualification @relation(fields: [preQualificationId], references: [id])
+  preQualificationId Int              @unique
+
+  status        MerchantApplicationStatus         @default(DRAFT)
+  statusChanges MerchantApplicationStatusChange[]
+
+  partner   Partner? @relation("ApplicationPartner", fields: [partnerId], references: [id])
+  partnerId Int?
+
+  distributionPartner   Partner? @relation("ApplicationDistributionPartner", fields: [distributionPartnerId], references: [id])
+  distributionPartnerId Int?
+
+  customer   Partner? @relation("ApplicationCustomer", fields: [customerId], references: [id])
+  customerId Int?
+
+  partnerOfCustomer   Partner? @relation("ApplicationPartnerOfCustomer", fields: [partnerOfCustomerId], references: [id])
+  partnerOfCustomerId Int?
+
+  country     String?                 @db.VarChar(10)
+  serviceType ApplicationServiceType?
+  outletCount Int?
+  outlets     ApplicationOutlet[]
+
+  amlStatus           AmlStatus?
+  riskStatus          RiskStatus?
+  gatewaySetupStatus  GatewaySetupStatus?
+  hardwareOrderStatus HardwareOrderStatus?
+
+  sameBankDetailsForAllOutlets Boolean              @default(false)
+  paymentInformation           PaymentInformation[]
+
+  companyInformation MerchantApplicationCompanyInformation?
+  owners             MerchantApplicationOwner[]
+  documents          MerchantApplicationDocument[]
+  addresses          MerchantApplicationAddress[]
+
+  createdAt       DateTime @default(now())
+  createdByUser   User     @relation("ApplicationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdByUserId Int
+
+  updatedAt       DateTime @updatedAt
+  updatedByUser   User     @relation("ApplicationUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: Cascade)
+  updatedByUserId Int
+
+  @@index([status])
+  @@index([partnerId])
+  @@index([distributionPartnerId])
+  @@index([customerId])
+  @@index([partnerOfCustomerId])
+  @@index([country])
+  @@index([serviceType])
+  @@map("merchant_applications")
+}
+
+model MerchantApplicationCompanyInformation {
+  id                    Int                 @id @default(autoincrement())
+  merchantApplication   MerchantApplication @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  merchantApplicationId Int                 @unique
+
+  businessType        BusinessType?
+  isCompanyRegistered Boolean?
+  registeredNumber    String?       @db.VarChar(50)
+  legalCompanyName    String?
+  websiteAddress      String?
+  vatRegistered       Boolean?
+  vatNumber           String?       @db.VarChar(50)
+
+  registeredAddressId Int?
+  registeredAddress   MerchantApplicationAddress? @relation("MerchantApplicationCompanyRegisteredAddress", fields: [registeredAddressId, merchantApplicationId], references: [id, merchantApplicationId])
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+
+  @@unique([registeredAddressId, merchantApplicationId])
+  @@index([merchantApplicationId])
+  @@index([registeredAddressId])
+  @@map("merchant_application_company_information")
+}
+
+model MerchantApplicationOwner {
+  id                    Int                 @id @default(autoincrement())
+  merchantApplication   MerchantApplication @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  merchantApplicationId Int
+
+  ordinal             Int?
+  title               String?   @db.VarChar(20)
+  firstName           String?
+  lastName            String?
+  nationality         String?
+  dateOfBirth         DateTime?
+  email               String?
+  phoneNumber         String?   @db.VarChar(50)
+  percentageOwnership Decimal?  @db.Decimal(5, 2)
+
+  personalAddressId Int?
+  personalAddress   MerchantApplicationAddress? @relation("MerchantApplicationOwnerPersonalAddress", fields: [personalAddressId, merchantApplicationId], references: [id, merchantApplicationId])
+
+  documents MerchantApplicationDocument[]
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+
+  @@unique([id, merchantApplicationId])
+  @@index([merchantApplicationId])
+  @@index([personalAddressId])
+  @@map("merchant_application_owners")
+}
+
+model MerchantApplicationAddress {
+  id                    Int                 @id @default(autoincrement())
+  merchantApplication   MerchantApplication @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  merchantApplicationId Int
+
+  addressLine1 String  @db.VarChar(100)
+  addressLine2 String? @db.VarChar(100)
+  townOrCity   String  @db.VarChar(50)
+  county       String? @db.VarChar(50)
+  country      String  @db.VarChar(50)
+  postcode     String? @db.VarChar(50)
+  addressCode  String? @db.VarChar(50)
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+
+  companyRegisteredAddressFor MerchantApplicationCompanyInformation? @relation("MerchantApplicationCompanyRegisteredAddress")
+  ownerPersonalAddressFor     MerchantApplicationOwner[]             @relation("MerchantApplicationOwnerPersonalAddress")
+  outletAddressFor            ApplicationOutlet[]                    @relation("MerchantApplicationOutletAddress")
+
+  @@unique([id, merchantApplicationId])
+  @@index([merchantApplicationId])
+  @@map("merchant_application_addresses")
+}
+
+enum MerchantApplicationDocumentType {
+  COMPANY_DOCUMENT
+  OWNER_DOCUMENT
+  BANK_PROOF
+}
+
+model MerchantApplicationDocument {
+  id                    Int                 @id @default(autoincrement())
+  merchantApplication   MerchantApplication @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  merchantApplicationId Int
+
+  ownerId Int?
+  owner   MerchantApplicationOwner? @relation(fields: [ownerId, merchantApplicationId], references: [id, merchantApplicationId], onDelete: Cascade)
+
+  outletId Int?
+  outlet   ApplicationOutlet? @relation(fields: [outletId, merchantApplicationId], references: [id, merchantApplicationId], onDelete: Cascade)
+
+  type          MerchantApplicationDocumentType
+  fileName      String?
+  mimeType      String?                         @db.VarChar(100)
+  fileSizeBytes Int?
+  storageKey    String                          @db.VarChar(1024)
+
+  createdAt       DateTime @default(now())
+  createdByUser   User     @relation("MerchantApplicationDocumentCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdByUserId Int
+
+  @@index([merchantApplicationId])
+  @@index([ownerId])
+  @@index([outletId])
+  @@index([type])
+  @@map("merchant_application_documents")
+}
+
+enum MerchantApplicationStatus {
+  DRAFT
+  AWAITING_SIGNATURE
+  ERROR_IDENTIFIED
+  NPI_INTERNAL_CS_REVIEW
+  AWAITING_HARDWARE_DISPATCH
+  SENT_TO_WORLDPAY_AWAITING_MID
+  APPLICATION_ACCEPTED
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  AWAITING_SUPPORTING_DOCUMENTS
+}
+
+model MerchantApplicationStatusChange {
+  id                    Int                       @id @default(autoincrement())
+  status                MerchantApplicationStatus
+  merchantApplication   MerchantApplication       @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  merchantApplicationId Int
+
+  createdAt       DateTime @default(now())
+  createdByUser   User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdByUserId Int
+
+  @@index([merchantApplicationId])
+  @@map("merchant_application_status_changes")
+}
+
+enum ApplicationServiceType {
+  FACE_TO_FACE
+  ECOMMERCE
+  BOTH
+}
+
+enum OutletServiceType {
+  FACE_TO_FACE
+  ECOMMERCE
+}
+
+enum AmlStatus {
+  AML_CHECKS_IN_PROGRESS
+  COMPLETED
+  APPROVED
+  PASSED
+  REJECTED
+  FAILED
+  DECLINED
+  PENDING
+  REVIEW
+}
+
+enum RiskStatus {
+  DECISION_IN_PROGRESS
+  LOW_RISK
+  MEDIUM_RISK
+  HIGH_RISK
+  LOW
+  MEDIUM
+  HIGH
+  IN_PROGRESS
+  REVIEW
+}
+
+enum GatewaySetupStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  ACTIVE
+  CONFIGURED
+  FAILED
+  ERROR
+  CANCELLED
+}
+
+enum HardwareOrderStatus {
+  NOT_ORDERED
+  ORDERED
+  SHIPPED
+  DELIVERED
+  COMPLETED
+  RECEIVED
+  CANCELLED
+  FAILED
+  RETURNED
+  IN_TRANSIT
+  PROCESSING
+}
+
+model ApplicationOutlet {
+  id                    Int               @id @default(autoincrement())
+  merchantApplicationId Int
+  outletNumber          Int
+  serviceType           OutletServiceType
+
+  tradingName               String?
+  mcc                       String?  @db.VarChar(10)
+  visaMonthlyTurnover       Decimal? @db.Decimal(14, 2)
+  mastercardMonthlyTurnover Decimal? @db.Decimal(14, 2)
+  motoPercentage            Decimal? @db.Decimal(5, 2)
+  sameAsRegisteredAddress   Boolean  @default(false)
+
+  outletAddressId Int?
+  outletAddress   MerchantApplicationAddress? @relation("MerchantApplicationOutletAddress", fields: [outletAddressId, merchantApplicationId], references: [id, merchantApplicationId])
+
+  paymentInformation  PaymentInformation[]
+  documents           MerchantApplicationDocument[]
+  merchantApplication MerchantApplication           @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantApplicationId, outletNumber])
+  @@unique([id, merchantApplicationId])
+  @@index([merchantApplicationId])
+  @@map("application_outlets")
+}
+
+// Partner Management
+model Partner {
+  id                Int    @id @default(autoincrement())
+  tenantId          Int?
+  parentId          Int?
+  reference         String
+  accountManager    Int?
+  business          Int?
+  primaryContactId  Int?
+  billingContactId  Int?
+  serviceContactId  Int?
+  registeredAddress Int?
+  tradingAddress    Int?
+
+  slug           String?               @unique @db.VarChar(50)
+  ancestorIds    Int[]                 @default([])
+  hierarchyLevel PartnerHierarchyLevel @default(PROVISIONER)
+  depth          Int                   @default(0)
+  isActive       Boolean               @default(true)
+
+  businessType        String? @db.VarChar(100)
+  isCompanyRegistered String? @db.VarChar(10)
+  registeredNumber    String? @db.VarChar(50)
+  vatRegistered       String? @db.VarChar(10)
+  vatNumber           String? @db.VarChar(50)
+
+  operatingCountries  String[] @default([])
+  operatingCurrencies String[] @default([])
+
+  isCommissionEnabled String? @db.VarChar(10)
+  commissionFrequency String? @db.VarChar(20)
+
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  tenant                 Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  businessRel            Business?               @relation(fields: [business], references: [id])
+  primaryContact         Contact?                @relation("PartnerPrimaryContact", fields: [primaryContactId], references: [id])
+  billingContact         Contact?                @relation("PartnerBillingContact", fields: [billingContactId], references: [id])
+  serviceContact         Contact?                @relation("PartnerServiceContact", fields: [serviceContactId], references: [id])
+  registeredAddressRel   Address?                @relation("PartnerRegisteredAddress", fields: [registeredAddress], references: [id])
+  tradingAddressRel      Address?                @relation("PartnerTradingAddress", fields: [tradingAddress], references: [id])
+  parentRel              Partner?                @relation("PartnerHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children               Partner[]               @relation("PartnerHierarchy")
+  merchants              Merchant[]
+  users                  PartnerUser[]
+  application            PartnerApplication?
+  contacts               PartnerContact[]
+  accounts               Account[]
+  ongoingMonitoringCases OngoingMonitoringCase[]
+  status                 PartnerStatus           @default(ACTIVE)
+
+  applicationsAsPartner             MerchantApplication[] @relation("ApplicationPartner")
+  applicationsAsDistributionPartner MerchantApplication[] @relation("ApplicationDistributionPartner")
+  applicationsAsCustomer            MerchantApplication[] @relation("ApplicationCustomer")
+  applicationsAsPartnerOfCustomer   MerchantApplication[] @relation("ApplicationPartnerOfCustomer")
+
+  preQualsAsDistributionPartner PreQualification[] @relation("PreQualDistributionPartner")
+  preQualsAsCustomer            PreQualification[] @relation("PreQualCustomer")
+  preQualsAsPartnerOfCustomer   PreQualification[] @relation("PreQualPartnerOfCustomer")
+
+  @@unique([tenantId, slug])
+  @@index([ancestorIds])
+  @@index([parentId])
+  @@index([tenantId])
+  @@index([tenantId, hierarchyLevel])
+  @@index([hierarchyLevel])
+  @@index([depth])
+  @@index([isActive])
+  @@index([status])
+  @@index([business])
+  @@map("partners")
+}
+
+enum PartnerStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+  REJECTED
+  SUSPENDED
+  DELETED
+}
+
+model PartnerUser {
+  partner              Int
+  user                 Int
+  isPrimary            Boolean  @default(false)
+  canAccessDescendants Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  createdBy            Int?
+  updatedAt            DateTime @updatedAt
+  updatedBy            Int?
+
+  partnerRel Partner @relation(fields: [partner], references: [id], onDelete: Cascade)
+  userRel    User    @relation(fields: [user], references: [id], onDelete: Cascade)
+
+  @@id([partner, user])
+  @@index([user])
+  @@index([partner])
+  @@index([user, isPrimary])
+  @@index([canAccessDescendants])
+  @@map("partner_users")
+}
+
+model PartnerApplication {
+  id          Int                      @id @default(autoincrement())
+  partner     Int                      @unique
+  status      PartnerApplicationStatus
+  createdAt   DateTime                 @default(now())
+  createdBy   Int?
+  updatedAt   DateTime                 @updatedAt
+  updatedBy   Int?
+  approvedAt  DateTime?
+  approvedBy  Int?
+  cancelledAt DateTime?
+  cancelledBy Int?
+  deletedAt   DateTime?
+  deletedBy   Int?
+
+  partnerRel          Partner              @relation(fields: [partner], references: [id])
+  partnerInformation  PartnerInformation?
+  paymentInformation  PaymentInformation[]
+  pricingInformation  PricingInformation?
+  contractInformation ContractInformation?
+
+  @@map("partner_applications")
+}
+
+enum PartnerApplicationStatus {
+  DRAFT
+  AWAITING_SIGNATURE
+  ERROR_IDENTIFIED
+  APPLICATION_ACCEPTED
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model PartnerInformation {
+  id                   Int       @id @default(autoincrement())
+  partnerApplicationId Int       @unique
+  companyName          String?
+  registrationNumber   String?
+  taxReference         String?
+  businessType         String?
+  yearsInBusiness      Int?
+  numberOfMerchants    Int?
+  territoryOfOperation String?
+  description          String?   @db.Text
+  createdAt            DateTime  @default(now())
+  createdBy            Int?
+  updatedAt            DateTime  @updatedAt
+  updatedBy            Int?
+  deletedAt            DateTime?
+  deletedBy            Int?
+
+  partnerApplication PartnerApplication @relation(fields: [partnerApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("partner_information")
+}
+
+model PaymentInformation {
+  id                    Int  @id @default(autoincrement())
+  partnerApplicationId  Int?
+  merchantApplicationId Int?
+  applicationOutletId   Int?
+
+  currency String      @db.Char(3)
+  type     AccountType @default(ALL)
+
+  bankName      String?
+  accountName   String?
+  accountNumber String? @db.VarChar(50)
+  sortCode      String? @db.VarChar(20)
+  iban          String? @db.VarChar(50)
+  bic           String? @db.VarChar(50)
+  paymentTerms  String?
+
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  partnerApplication  PartnerApplication?  @relation(fields: [partnerApplicationId], references: [id], onDelete: Cascade)
+  merchantApplication MerchantApplication? @relation(fields: [merchantApplicationId], references: [id], onDelete: Cascade)
+  applicationOutlet   ApplicationOutlet?   @relation(fields: [applicationOutletId], references: [id], onDelete: Cascade)
+
+  @@index([partnerApplicationId])
+  @@index([merchantApplicationId])
+  @@index([applicationOutletId])
+  @@index([currency])
+  @@index([type])
+  @@map("payment_information")
+}
+
+model PricingInformation {
+  id                   Int       @id @default(autoincrement())
+  partnerApplicationId Int       @unique
+  commissionRate       Decimal?  @db.Decimal(5, 2)
+  feeStructure         String?
+  minimumVolume        Decimal?  @db.Decimal(14, 2)
+  maximumVolume        Decimal?  @db.Decimal(14, 2)
+  pricingTier          String?
+  specialConditions    String?   @db.Text
+  createdAt            DateTime  @default(now())
+  createdBy            Int?
+  updatedAt            DateTime  @updatedAt
+  updatedBy            Int?
+  deletedAt            DateTime?
+  deletedBy            Int?
+
+  partnerApplication PartnerApplication @relation(fields: [partnerApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("pricing_information")
+}
+
+model ContractInformation {
+  id                   Int       @id @default(autoincrement())
+  partnerApplicationId Int       @unique
+  contractType         String?
+  contractStartDate    DateTime?
+  contractEndDate      DateTime?
+  renewalTerms         String?
+  noticePeriod         Int?
+  signedByPartner      Boolean   @default(false)
+  signedByNPI          Boolean   @default(false)
+  contractDocument     String?
+  termsAndConditions   String?   @db.Text
+  createdAt            DateTime  @default(now())
+  createdBy            Int?
+  updatedAt            DateTime  @updatedAt
+  updatedBy            Int?
+  deletedAt            DateTime?
+  deletedBy            Int?
+
+  partnerApplication PartnerApplication @relation(fields: [partnerApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("contract_information")
+}
+
+model Acquirer {
+  id            Int            @id @default(autoincrement())
+  name          String         @unique
+  createdAt     DateTime       @default(now())
+  createdBy     Int?
+  updatedAt     DateTime       @updatedAt
+  updatedBy     Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+  productOffers ProductOffer[]
+
+  @@map("acquirers")
+}
+
+enum ChargeType {
+  PER_OCCURRENCE
+  PER_MONTH
+  PER_YEAR
+  ONCE_OFF
+  CUSTOMER_OWNED
+}
+
+// Products and Services
+model Product {
+  id                 Int              @id @default(autoincrement())
+  name               String
+  description        String?          @db.Text
+  productCategory    ProductCategory?
+  oneOffLowest       Decimal?         @db.Decimal(14, 2)
+  oneOffHighest      Decimal?         @db.Decimal(14, 2)
+  monthlyLowest      Decimal?         @db.Decimal(14, 2)
+  monthlyHighest     Decimal?         @db.Decimal(14, 2)
+  promotable         Boolean
+  commissionable     Boolean
+  ledger             Int?
+  price              Decimal?         @db.Decimal(14, 2)
+  category           String?
+  stock              Int?
+  productType        String?          @db.VarChar(100)
+  countries          String[]
+  provider           String?
+  apiValue           String?
+  processingCategory String?          @db.VarChar(100)
+  cardScheme         String?          @db.VarChar(100)
+  rateType           String?          @db.VarChar(100)
+  chargesBase        Decimal?         @db.Decimal(14, 2)
+  chargesPercentage  Decimal?         @db.Decimal(5, 2)
+  images             String[]
+  chargeType         ChargeType?
+  status             String?          @db.VarChar(50)
+  createdAt          DateTime         @default(now())
+  createdBy          Int?
+  deletedAt          DateTime?
+  deletedBy          Int?
+
+  serviceProducts      ServiceProduct[]
+  bundles              BundleProduct[]
+  productOffers        ProductOffer[]
+  productOfferProducts ProductOfferProduct[] @relation(name: "ProductOfferProduct_product")
+
+  @@map("products")
+}
+
+enum ProductCategory {
+  Terminals
+  Online
+  EPOS_Hardware
+  Support_Packages
+  Hardware_Delivery
+  Configuration
+  Added_Value_Products
+}
+
+model Bundle {
+  id            Int             @id @default(autoincrement())
+  name          String
+  createdAt     DateTime        @default(now())
+  createdBy     Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+  products      BundleProduct[]
+  productOffers ProductOffer[]
+
+  @@map("bundles")
+}
+
+model BundleProduct {
+  bundle     Int
+  product    Int
+  bundleRel  Bundle  @relation(fields: [bundle], references: [id])
+  productRel Product @relation(fields: [product], references: [id])
+
+  @@id([bundle, product])
+  @@index([bundle])
+  @@index([product])
+  @@map("bundle_products")
+}
+
+model ServiceProduct {
+  id                      Int       @id @default(autoincrement())
+  merchant                Int
+  product                 Int?
+  bundle                  Int?
+  promotion               String?
+  oneOff                  Decimal?  @db.Decimal(14, 2)
+  monthly                 Decimal?  @db.Decimal(14, 2)
+  initialTermMonths       Int?
+  transactionPricingOffer Int?
+  createdAt               DateTime  @default(now())
+  createdBy               Int?
+  deletedAt               DateTime?
+  deletedBy               Int?
+  activation              DateTime?
+  outlet                  Int?
+
+  merchantRel            Merchant                 @relation(fields: [merchant], references: [id])
+  productRel             Product?                 @relation(fields: [product], references: [id])
+  pricingOfferRel        TransactionPricingOffer? @relation(fields: [transactionPricingOffer], references: [id])
+  invoiceServiceProducts InvoiceServiceProduct[]
+
+  @@index([merchant])
+  @@index([product])
+  @@index([transactionPricingOffer])
+  @@map("service_products")
+}
+
+model TransactionPricingOffer {
+  id                    Int                              @id @default(autoincrement())
+  tag                   TransactionPricingOfferTag?
+  type                  TransactionPricingOfferType?
+  category              TransactionPricingOfferCategory?
+  baseRate              Decimal?                         @db.Decimal(14, 2)
+  percentageBaseRate    Decimal?                         @db.Decimal(5, 2)
+  percentageLowestRate  Decimal?                         @db.Decimal(5, 2)
+  percentageHighestRate Decimal?                         @db.Decimal(5, 2)
+  perItemBaseRate       Decimal?                         @db.Decimal(14, 2)
+  perItemLowestRate     Decimal?                         @db.Decimal(14, 2)
+  perItemHighestRate    Decimal?                         @db.Decimal(14, 2)
+  baseRatePercentage    Decimal?                         @db.Decimal(5, 2)
+  createdAt             DateTime                         @default(now())
+  createdBy             Int?
+  deletedAt             DateTime?
+  deletedBy             Int?
+
+  serviceProducts ServiceProduct[]
+
+  @@map("transaction_pricing_offers")
+}
+
+enum TransactionPricingOfferTag {
+  maestroIntDebitPersonalInformation
+  visaDebit
+  debitMaster
+  masterCredit
+  visaCredit
+  masterCardSigniaOrMastercardWorld
+  masterCard
+  visaDrComInt
+  jcb
+  dinersClubOrDiscover
+  unionPayInternational
+}
+
+enum TransactionPricingOfferType {
+  PERCENTAGE
+  PER_ITEM
+  BOTH
+}
+
+enum TransactionPricingOfferCategory {
+  PERSONAL_CARDS
+  COMMERCIAL_CARDS
+  OTHER
+}
+
+model Promotion {
+  id            Int            @id @default(autoincrement())
+  description   String
+  type          PromotionType?
+  value         Decimal?       @db.Decimal(14, 2)
+  monthsPre     Int?
+  createdAt     DateTime       @default(now())
+  createdBy     Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+  active        Boolean
+  productOffers ProductOffer[]
+
+  @@map("promotions")
+}
+
+enum PromotionType {
+  Percentage
+  Amount
+}
+
+model ProductOffer {
+  id                    Int                      @id @default(autoincrement())
+  name                  String
+  description           String?                  @db.Text
+  offerType             ProductOfferType
+  hierarchyLevel        HierarchyLevel
+  acquirerId            Int?
+  distributionPartnerId Int?
+  customerId            Int?
+  partnerOfCustomerId   Int?
+  productId             Int?
+  bundleId              Int?
+  oneOffPrice           Decimal?                 @db.Decimal(14, 2)
+  monthlyPrice          Decimal?                 @db.Decimal(14, 2)
+  promotionId           Int?
+  status                ProductOfferStatus       @default(ACTIVE)
+  effectiveFrom         DateTime?
+  effectiveTo           DateTime?
+  createdAt             DateTime                 @default(now())
+  createdBy             Int?
+  updatedAt             DateTime                 @updatedAt
+  updatedBy             Int?
+  deletedAt             DateTime?
+  deletedBy             Int?
+  acquirer              Acquirer?                @relation(fields: [acquirerId], references: [id])
+  promotion             Promotion?               @relation(fields: [promotionId], references: [id])
+  product               Product?                 @relation(fields: [productId], references: [id])
+  bundle                Bundle?                  @relation(fields: [bundleId], references: [id])
+  termLengths           ProductOfferTermLength[]
+  customTermLength      Int?
+  boardingType          BoardingType?
+  currency              String?                  @db.Char(3)
+  productOfferProducts  ProductOfferProduct[]
+  preQualifications     PreQualification[]
+
+  @@index([hierarchyLevel])
+  @@index([distributionPartnerId])
+  @@index([customerId])
+  @@index([partnerOfCustomerId])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([acquirerId])
+  @@index([productId])
+  @@index([bundleId])
+  @@index([promotionId])
+  @@map("product_offers")
+}
+
+model ProductOfferProduct {
+  productId      Int
+  productOfferId Int
+  chargeType     ChargeType?
+  minimumCharge  Decimal?    @db.Decimal(14, 2)
+  maximumCharge  Decimal?    @db.Decimal(14, 2)
+  defaultCharge  Decimal?    @db.Decimal(14, 2)
+  currency       String?     @db.Char(3)
+
+  productOffer ProductOffer @relation(fields: [productOfferId], references: [id])
+  product      Product      @relation(fields: [productId], references: [id], name: "ProductOfferProduct_product")
+
+  @@id([productId, productOfferId])
+  @@index([productId])
+  @@index([productOfferId])
+  @@map("product_offer_products")
+}
+
+enum BoardingType {
+  INTERNAL_BOARDING
+}
+
+enum ProductOfferTermLength {
+  O12_MONTHS
+  O18_MONTHS
+  O24_MONTHS
+  O36_MONTHS
+  O48_MONTHS
+  CUSTOM
+}
+
+enum ProductOfferType {
+  FaceToFace
+  ECommerce
+  FaceToFaceAndECommerce
+}
+
+enum HierarchyLevel {
+  PROVISIONER
+  DISTRIBUTION_PARTNER
+  CUSTOMER
+  PARTNER_OF_CUSTOMER
+}
+
+enum ProductOfferStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+model RevenueShare {
+  id           Int                @id @default(autoincrement())
+  name         String
+  revenueShare Decimal            @db.Decimal(5, 2)
+  status       RevenueShareStatus
+  createdAt    DateTime           @default(now())
+  createdBy    Int?
+  deletedAt    DateTime?
+  deletedBy    Int?
+
+  @@map("revenue_shares")
+}
+
+enum RevenueShareStatus {
+  ACTIVATED
+  DEACTIVATED
+  DELETED
+  LEGACY
+}
+
+// Invoice Management
+model Invoice {
+  id             Int                    @id @default(autoincrement())
+  merchant       Int?
+  status         InvoiceStatus
+  frequency      InvoiceFrequency?
+  recurrence     InvoiceRecurrence?
+  recurrenceType InvoiceRecurrenceType?
+  total          Decimal?               @db.Decimal(14, 2)
+  totalNet       Decimal?               @db.Decimal(14, 2)
+  totalVAT       Decimal?               @db.Decimal(14, 2)
+  comments       String?                @db.Text
+  selfBilling    Boolean?
+  invoiceDate    DateTime?
+  dueDate        DateTime?
+  sentAt         DateTime?
+  createdAt      DateTime               @default(now())
+  createdBy      Int?
+  updatedAt      DateTime               @updatedAt
+  updatedBy      Int?
+  deletedAt      DateTime?
+  deletedBy      Int?
+
+  merchantRel     Merchant?               @relation(fields: [merchant], references: [id])
+  serviceProducts InvoiceServiceProduct[]
+  items           InvoiceItem[]
+
+  @@index([merchant])
+  @@map("invoices")
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  VOID
+  DRAFT
+  PROCESSING
+  PARTIALLY_FAILED
+  FAILED
+  DISPUTED
+  DECLINED
+  PRO_FORMA
+}
+
+enum InvoiceFrequency {
+  RECURRING
+  ONE_OFF
+}
+
+enum InvoiceRecurrence {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum InvoiceRecurrenceType {
+  FIXED_OCCURRENCE
+  CREATE_UNTIL_CANCEL
+}
+
+model InvoiceServiceProduct {
+  id             Int  @id @default(autoincrement())
+  serviceProduct Int
+  invoice        Int
+  merchant       Int?
+  partner        Int?
+
+  serviceProductRel ServiceProduct @relation(fields: [serviceProduct], references: [id])
+  invoiceRel        Invoice        @relation(fields: [invoice], references: [id])
+
+  @@index([serviceProduct])
+  @@index([invoice])
+  @@map("invoice_service_products")
+}
+
+model InvoiceItem {
+  id           Int       @id @default(autoincrement())
+  invoice      Int
+  quantity     Int
+  product      Int?
+  description  String
+  lineTotal    Decimal?  @db.Decimal(14, 2)
+  lineTotalNet Decimal?  @db.Decimal(14, 2)
+  lineTotalVat Decimal?  @db.Decimal(14, 2)
+  createdAt    DateTime  @default(now())
+  createdBy    Int?
+  updatedAt    DateTime  @updatedAt
+  updatedBy    Int?
+  deletedAt    DateTime?
+  deletedBy    Int?
+
+  invoiceRel Invoice @relation(fields: [invoice], references: [id])
+
+  @@index([invoice])
+  @@map("invoice_items")
+}
+
+model CreditNote {
+  id             Int              @id @default(autoincrement())
+  invoice        Int
+  creditNote     Int?
+  status         CreditNoteStatus
+  totalCredit    Decimal?         @db.Decimal(14, 2)
+  totalNetCredit Decimal?         @db.Decimal(14, 2)
+  totalVATCredit Decimal?         @db.Decimal(14, 2)
+  reason         String?
+  creditNoteDate DateTime?
+  sentAt         DateTime?
+  createdAt      DateTime         @default(now())
+  createdBy      Int?
+  updatedAt      DateTime         @updatedAt
+  updatedBy      Int?
+  deletedAt      DateTime?
+  deletedBy      Int?
+
+  items CreditNoteItem[]
+
+  @@index([invoice])
+  @@map("credit_notes")
+}
+
+enum CreditNoteStatus {
+  CREDITED
+  PARTIALLY_CREDITED
+  OPEN
+}
+
+model CreditNoteItem {
+  id           Int       @id @default(autoincrement())
+  creditNote   Int
+  quantity     Int
+  product      Int?
+  description  String
+  lineTotal    Decimal?  @db.Decimal(14, 2)
+  lineTotalNet Decimal?  @db.Decimal(14, 2)
+  lineTotalVat Decimal?  @db.Decimal(14, 2)
+  createdAt    DateTime  @default(now())
+  createdBy    Int?
+  updatedAt    DateTime  @updatedAt
+  updatedBy    Int?
+  deletedAt    DateTime?
+  deletedBy    Int?
+
+  creditNoteRel CreditNote @relation(fields: [creditNote], references: [id])
+
+  @@index([creditNote])
+  @@map("credit_note_items")
+}
+
+// Country Information
+model Country {
+  id             Int      @id @default(autoincrement())
+  name           String   @db.VarChar(255)
+  alpha2Code     String   @unique @db.VarChar(2)
+  capital        String?  @db.VarChar(255)
+  region         String?  @db.VarChar(100)
+  postalCodeType String?  @db.VarChar(100)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  topLevelDomains TopLevelDomain[]
+  callingCodes    CallingCode[]
+  timezones       Timezone[]
+  flags           Flag[]
+  currencies      CountryCurrency[]
+
+  @@index([name])
+  @@index([region])
+  @@map("countries")
+}
+
+model TopLevelDomain {
+  id        Int      @id @default(autoincrement())
+  domain    String   @db.VarChar(63)
+  countryId Int
+  country   Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([countryId])
+  @@map("top_level_domains")
+}
+
+model CallingCode {
+  id        Int      @id @default(autoincrement())
+  code      String   @db.VarChar(10)
+  countryId Int
+  country   Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([countryId])
+  @@map("calling_codes")
+}
+
+model Timezone {
+  id        Int      @id @default(autoincrement())
+  timezone  String   @db.VarChar(100)
+  countryId Int
+  country   Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([countryId])
+  @@map("timezones")
+}
+
+model Flag {
+  id        Int      @id @default(autoincrement())
+  svg       String?  @db.Text
+  png       String?  @db.Text
+  countryId Int
+  country   Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([countryId])
+  @@map("flags")
+}
+
+model CountryCurrency {
+  id        Int      @id @default(autoincrement())
+  code      String   @db.VarChar(10)
+  name      String   @db.VarChar(100)
+  symbol    String?  @db.VarChar(10)
+  countryId Int
+  country   Country  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([countryId])
+  @@index([code])
+  @@map("country_currencies")
+}
+
+model PasswordResetToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique @db.VarChar(255)
+  userId    Int      @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
+}
+
+// Ongoing Monitoring
+enum OngoingMonitoringStatus {
+  REVIEW_REQUIRED
+  SETTLEMENTS_PAUSED
+  RESOLVED
+  CLOSED
+}
+
+enum AlertType {
+  COMPANY
+  OWNER
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model OngoingMonitoringCase {
+  id               Int                     @id @default(autoincrement())
+  alertId          String                  @unique @db.VarChar(50)
+  tenantId         Int
+  partnerId        Int
+  merchantId       Int?
+  hasCompanyAlerts Boolean                 @default(false)
+  hasOwnerAlerts   Boolean                 @default(false)
+  status           OngoingMonitoringStatus
+  createdAt        DateTime                @default(now())
+  createdBy        Int?
+  updatedAt        DateTime                @updatedAt
+  updatedBy        Int?
+  closedAt         DateTime?
+  closedBy         Int?
+
+  tenant        Tenant                           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner       Partner                          @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  merchant      Merchant?                        @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  alerts        OngoingMonitoringAlert[]
+  statusHistory OngoingMonitoringStatusHistory[]
+
+  @@index([tenantId])
+  @@index([partnerId])
+  @@index([merchantId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@map("ongoing_monitoring_cases")
+}
+
+model OngoingMonitoringAlert {
+  id              Int           @id @default(autoincrement())
+  caseId          Int
+  alertType       AlertType
+  source          String        @db.VarChar(100)
+  severity        AlertSeverity
+  description     String        @db.Text
+  ownerName       String?       @db.VarChar(255)
+  detectedAt      DateTime      @default(now())
+  acknowledgedAt  DateTime?
+  acknowledgedBy  Int?
+  resolvedAt      DateTime?
+  resolvedBy      Int?
+  resolutionNotes String?       @db.Text
+
+  case               OngoingMonitoringCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  acknowledgedByUser User?                 @relation("AlertAcknowledgedBy", fields: [acknowledgedBy], references: [id], onDelete: SetNull)
+  resolvedByUser     User?                 @relation("AlertResolvedBy", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([caseId])
+  @@index([alertType])
+  @@index([severity])
+  @@index([detectedAt])
+  @@map("ongoing_monitoring_alerts")
+}
+
+model OngoingMonitoringStatusHistory {
+  id         Int                      @id @default(autoincrement())
+  caseId     Int
+  fromStatus OngoingMonitoringStatus?
+  toStatus   OngoingMonitoringStatus
+  notes      String?                  @db.Text
+  changedAt  DateTime                 @default(now())
+  changedBy  Int?
+
+  case OngoingMonitoringCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  user User?                 @relation(fields: [changedBy], references: [id], onDelete: SetNull)
+
+  @@index([caseId])
+  @@index([changedAt])
+  @@map("ongoing_monitoring_status_history")
+}
