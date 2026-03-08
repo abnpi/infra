@@ -2,7 +2,7 @@ import os
 from decimal import Decimal
 
 import awswrangler as wr  # type: ignore
-import pandas as pd
+import pandas as pd  # type: ignore
 
 
 def handler(event, context):

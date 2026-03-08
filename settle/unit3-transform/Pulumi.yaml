@@ -1,6 +1,0 @@
-name: settle-transform
-runtime:
-  name: nodejs
-  options:
-    typescript: true
-description: Settlement transform/normalization Lambda — S3-triggered, not in VPC

@@ -1,6 +1,0 @@
-name: settle-seed
-runtime:
-  name: nodejs
-  options:
-    typescript: true
-description: Settlement seed/ingestion Lambda — deployed inside VPC private subnets
