@@ -92,23 +92,30 @@ new aws.lambda.Permission("s3-adyen-trigger-permission", {
   sourceArn: rawBucket.arn,
 });
 
-// 5. Analytics Engine (The Glue/Athena Schema definition)
+// 5. Analytics Engine: Unified Glue table over all acquirers.
+//    The normalised Parquet written by every adapter shares the same schema.
+//    `acquirer` is a Hive partition column — Athena pushes it down automatically
+//    so queries only scan the relevant prefix when filtering by acquirer.
 const settlementDb = new aws.athena.Database("settlements_db", {
   name: "settlements",
   bucket: cleanBucket.bucket,
 });
 
-const adyenTable = new aws.glue.CatalogTable("clean-zone-adyen", {
+const cleanZoneTable = new aws.glue.CatalogTable("clean-zone", {
   databaseName: settlementDb.name,
-  name: "clean_zone_adyen",
+  name: "clean_zone",
   tableType: "EXTERNAL_TABLE",
   parameters: {
     classification: "parquet",
     "parquet.compression": "SNAPPY",
   },
+  partitionKeys: [
+    // Hive-style partition: acquirer=adyen/, acquirer=worldpay/, etc.
+    { name: "acquirer", type: "string" },
+  ],
   storageDescriptor: {
-    // Points to the specific S3 prefix where your Python Lambda writes the Parquet files
-    location: pulumi.interpolate`s3://${cleanBucket.bucket}/acquirer=adyen/`,
+    // Root prefix — Athena resolves per-acquirer sub-prefixes via the partition
+    location: pulumi.interpolate`s3://${cleanBucket.bucket}/`,
     inputFormat:
       "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
     outputFormat:
@@ -119,12 +126,10 @@ const adyenTable = new aws.glue.CatalogTable("clean-zone-adyen", {
         "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
     },
     columns: [
-      { name: "company_account", type: "string" },
-      { name: "merchant_account", type: "string" },
+      { name: "payment_type", type: "string" },
       { name: "type", type: "string" },
-      { name: "net_currency", type: "string" },
-      { name: "net_debit", type: "decimal(19,4)" },
       { name: "net_credit", type: "decimal(19,4)" },
+      { name: "net_debit", type: "decimal(19,4)" },
     ],
   },
 });
@@ -172,35 +177,43 @@ new aws.iam.RolePolicy("sfn-athena-policy", {
   ),
 });
 
-// 7. Orchestration: The Step Functions State Machine
-const athenaQuery = `
-SELECT
-    merchant_account,
-    SUM(CASE WHEN type = 'Settled' THEN net_credit ELSE 0 END) as sum_positive,
-    SUM(CASE WHEN type = 'Refunded' THEN net_debit ELSE 0 END) as sum_negative,
-    SUM(CASE WHEN type IN ('Chargeback', 'ChargebackReversed') THEN net_debit ELSE 0 END) as sum_chargebacks,
-    SUM(CASE WHEN type = 'Refused' THEN net_debit ELSE 0 END) as sum_reversals
-FROM settlements.clean_zone_adyen
-GROUP BY merchant_account;
-`;
-
+// 7. Orchestration: Aggregation State Machine
+//
+//    Expected input:  { "acquirer": "adyen" }
+//
+//    The acquirer value is injected into both the WHERE clause (partition
+//    pruning) and the output path via States.Format at runtime, so the same
+//    state machine works for every acquirer without redeployment.
 const aggregationStateMachine = new aws.sfn.StateMachine(
   "aggregation-sfn",
   {
     roleArn: sfnRole.arn,
     definition: pulumi.all([cleanBucket.bucket]).apply(([bucketName]) =>
       JSON.stringify({
-        Comment: "Executes Athena Aggregation Query and waits for completion",
+        Comment:
+          "Executes Athena aggregation query for a given acquirer and waits for completion",
         StartAt: "RunAthenaAggregation",
         States: {
           RunAthenaAggregation: {
             Type: "Task",
             Resource: "arn:aws:states:::athena:startQueryExecution.sync",
             Parameters: {
-              QueryString: athenaQuery,
+              // States.Format injects $.acquirer at runtime
+              "QueryString.$":
+                "States.Format(\
+SELECT \
+    acquirer, \
+    payment_type, \
+    SUM(CASE WHEN type = 'settled'             THEN net_credit ELSE 0 END) AS settled, \
+    SUM(CASE WHEN type = 'refunded'            THEN net_debit  ELSE 0 END) AS refunded, \
+    SUM(CASE WHEN type = 'chargeback'          THEN net_debit  ELSE 0 END) AS chargebacks, \
+    SUM(CASE WHEN type = 'chargeback_reversal' THEN net_credit ELSE 0 END) AS chargeback_reversals \
+FROM settlements.clean_zone \
+WHERE acquirer = '{}' \
+GROUP BY acquirer, payment_type;, $.acquirer)",
               WorkGroup: "primary",
               ResultConfiguration: {
-                OutputLocation: `s3://${bucketName}/output/aggregates/acquirer=adyen/`,
+                "OutputLocation.$": `States.Format('s3://${bucketName}/output/aggregates/acquirer={}/', $.acquirer)`,
               },
             },
             End: true,
@@ -209,33 +222,12 @@ const aggregationStateMachine = new aws.sfn.StateMachine(
       }),
     ),
   },
-  { dependsOn: [adyenTable] },
+  { dependsOn: [cleanZoneTable] },
 );
 
-// The Step Functions State Machine - Fee calculcation
-const athenaQueryFees = `
-SELECT
-    merchant_account,
-    SUM(CASE WHEN type = 'Settled' THEN net_credit ELSE 0 END) as sum_positive,
-
-    -- Calculate 3% fee and round per transaction, THEN sum
-    SUM(
-        CASE WHEN type = 'Settled'
-        THEN CAST(net_credit * CAST(0.03 AS DECIMAL(18, 2)) AS DECIMAL(18, 2))
-        ELSE 0
-        END
-    ) as fee_on_settled,
-
-    SUM(
-        CASE WHEN type = 'Refunded'
-        THEN CAST(net_debit * CAST(0.03 AS DECIMAL(18, 2)) AS DECIMAL(18, 2))
-        ELSE 0
-        END
-    ) as fee_on_refunded
-
-    FROM settlements.clean_zone_adyen
-GROUP BY merchant_account;
-`;
+// 8. Orchestration: Fee Calculation State Machine
+//
+//    Expected input:  { "acquirer": "adyen" }
 const feeStateMachine = new aws.sfn.StateMachine(
   "fees-sfn",
   {
@@ -243,17 +235,32 @@ const feeStateMachine = new aws.sfn.StateMachine(
     definition: pulumi.all([cleanBucket.bucket]).apply(([bucketName]) =>
       JSON.stringify({
         Comment:
-          "Executes Athena Fee Calculcation Query and waits for completion",
+          "Executes Athena fee calculation query for a given acquirer and waits for completion",
         StartAt: "RunAthenaFeeCalculation",
         States: {
           RunAthenaFeeCalculation: {
             Type: "Task",
             Resource: "arn:aws:states:::athena:startQueryExecution.sync",
             Parameters: {
-              QueryString: athenaQueryFees,
+              "QueryString.$":
+                "States.Format(\
+SELECT \
+    acquirer, \
+    payment_type, \
+    SUM(CASE WHEN type = 'settled'  THEN net_credit ELSE 0 END) AS settled, \
+    SUM(CASE WHEN type = 'refunded' THEN net_debit  ELSE 0 END) AS refunded, \
+    SUM(CASE WHEN type = 'settled' \
+        THEN CAST(net_credit * CAST(0.03 AS DECIMAL(18,2)) AS DECIMAL(18,2)) \
+        ELSE 0 END) AS fee_on_settled, \
+    SUM(CASE WHEN type = 'refunded' \
+        THEN CAST(net_debit * CAST(0.03 AS DECIMAL(18,2)) AS DECIMAL(18,2)) \
+        ELSE 0 END) AS fee_on_refunded \
+FROM settlements.clean_zone \
+WHERE acquirer = '{}' \
+GROUP BY acquirer, payment_type;, $.acquirer)",
               WorkGroup: "primary",
               ResultConfiguration: {
-                OutputLocation: `s3://${bucketName}/output/fees/acquirer=adyen/`,
+                "OutputLocation.$": `States.Format('s3://${bucketName}/output/fees/acquirer={}/', $.acquirer)`,
               },
             },
             End: true,
@@ -262,7 +269,7 @@ const feeStateMachine = new aws.sfn.StateMachine(
       }),
     ),
   },
-  { dependsOn: [adyenTable] },
+  { dependsOn: [cleanZoneTable] },
 );
 
 export const rawBucketName = rawBucket.bucket;
