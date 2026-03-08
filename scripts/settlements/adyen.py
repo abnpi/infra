@@ -80,7 +80,7 @@ def generate_adyen_settlement(filename, num_rows, num_merchants):
         # Determine Transaction Type (Journal Type)
         rand = random.random()
 
-        row_data = {
+        row_data: dict[str, str | Decimal] = {
             "Type": "",
             "Gross Debit": "",
             "Gross Credit": "",
