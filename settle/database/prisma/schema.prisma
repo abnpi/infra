@@ -1,0 +1,124 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Account Owner Model
+// Can represent either a Merchant or Infinite (us) as the owner of virtual accounts
+// ---------------------------------------------------------------------------
+model AccountOwner {
+  id        Int      @id @default(autoincrement())
+  type      String   // "MERCHANT" or "INFINITE"
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  virtualAccounts VirtualAccount[]
+  settlementRequests SettlementRequest[]
+  
+  @@map("account_owners")
+}
+
+// ---------------------------------------------------------------------------
+// Virtual Account Types Enum
+// Defines the specific "buckets" for both Merchants and Infinite
+// ---------------------------------------------------------------------------
+enum VirtualAccountType {
+  MERCHANT_INBOUND      // Holds Net Available Funds calculated from Acquirer files
+  MERCHANT_FEES         // Holds deducted fees pending transfer to Infinite
+  MERCHANT_CHARGEBACKS  // Holds deducted chargebacks
+  MERCHANT_CB_REVERSAL  // Holds returning funds from successfully disputed chargebacks
+  MERCHANT_SETTLEMENT   // The final holding pen for merchant funds before bank transfer
+  INFINITE_SETTLEMENT   // Holds aggregated fees collected by Infinite
+}
+
+// ---------------------------------------------------------------------------
+// Virtual Account Table
+// Acts as the container for the funds with running balance
+// ---------------------------------------------------------------------------
+model VirtualAccount {
+  id              String             @id @default(uuid())
+  
+  // Nullable because Infinite has its own accounts that aren't tied to a specific merchant
+  accountOwnerId  Int?               
+  accountOwner    AccountOwner?      @relation(fields: [accountOwnerId], references: [id])
+  
+  type            VirtualAccountType 
+  currency        String             @db.Char(3) // e.g., "GBP", "EUR"
+  
+  // Denormalized running balance for fast reads by the UI/Dashboard.
+  // This must always be recalculatable by summing up the LedgerEntries.
+  currentBalance  Decimal            @default(0.00) @db.Decimal(19, 4)
+  
+  entries         LedgerEntry[]      
+  settlementRequests SettlementRequest[]
+
+  // Ensures an account owner only has ONE Inbound account for GBP, ONE Fee account for GBP, etc.
+  @@unique([accountOwnerId, type, currency])
+  @@map("virtual_accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Ledger Entry Table (The Audit Trail)
+// Every movement of funds requires an immutable ledger entry for double-entry accounting
+// ---------------------------------------------------------------------------
+model LedgerEntry {
+  id               String         @id @default(uuid())
+  virtualAccountId String         
+  virtualAccount   VirtualAccount @relation(fields: [virtualAccountId], references: [id])
+  
+  // The amount moved. Positive values for Credits, Negative for Debits
+  amount           Decimal        @db.Decimal(19, 4)
+  
+  // The snapshot balance of the account immediately after this transaction for audit verification
+  balanceAfter     Decimal        @db.Decimal(19, 4)
+  
+  // What triggered this movement? (e.g., "DAILY_FEE_CALCULATION", "CHARGEBACK_DEDUCTION")
+  transactionType  String         
+  
+  // Links to the external Acquirer File ID or Internal SettlementRequest ID
+  referenceId      String?        
+  description      String?        
+  
+  createdAt        DateTime       @default(now())
+
+  @@index([virtualAccountId])
+  @@index([createdAt])
+  @@map("ledger_entries")
+}
+
+// ---------------------------------------------------------------------------
+// Settlement Request Table
+// Tracks the final instructions sent to physically distribute funds
+// ---------------------------------------------------------------------------
+model SettlementRequest {
+  id              String   @id @default(uuid())
+  
+  // Null if this is a request to settle collected fees to Infinite's own bank account
+  accountOwnerId  Int?     
+  accountOwner    AccountOwner? @relation(fields: [accountOwnerId], references: [id])
+  
+  amount          Decimal  @db.Decimal(19, 4)
+  currency        String   
+  
+  // Status of the bank transfer (SUBMITTED, COMPLETED, REJECTED)
+  status          String   
+  
+  // Links to the specific ledger entry that zeroed out the MERCHANT_SETTLEMENT virtual account
+  ledgerEntryId   String   
+  
+  virtualAccountId String // The settlement account that was zeroed out
+  virtualAccount   VirtualAccount @relation(fields: [virtualAccountId], references: [id])
+  
+  createdAt       DateTime @default(now())
+
+  @@map("settlement_requests")
+}
