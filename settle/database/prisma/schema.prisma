@@ -38,6 +38,7 @@ enum VirtualAccountType {
   MERCHANT_CB_REVERSAL  // Holds returning funds from successfully disputed chargebacks
   MERCHANT_SETTLEMENT   // The final holding pen for merchant funds before bank transfer
   INFINITE_SETTLEMENT   // Holds aggregated fees collected by Infinite
+  INFINITE_TRANSIT_VAULT // Transit account for moving funds between Infinite and banks
 }
 
 // ---------------------------------------------------------------------------
