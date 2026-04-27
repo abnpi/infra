@@ -126,10 +126,42 @@ const cleanZoneTable = new aws.glue.CatalogTable("clean-zone", {
         "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
     },
     columns: [
+      { name: "merchant_id", type: "string" },
       { name: "payment_type", type: "string" },
       { name: "type", type: "string" },
       { name: "net_credit", type: "decimal(19,4)" },
       { name: "net_debit", type: "decimal(19,4)" },
+    ],
+  },
+});
+
+const merchantFeesTable = new aws.glue.CatalogTable("merchant-fees", {
+  databaseName: settlementDb.name,
+  name: "merchant_fees",
+  tableType: "EXTERNAL_TABLE",
+  parameters: {
+    classification: "parquet",
+    "parquet.compression": "SNAPPY",
+  },
+  partitionKeys: [
+    { name: "acquirer", type: "string" },
+  ],
+  storageDescriptor: {
+    location: pulumi.interpolate`s3://${cleanBucket.bucket}/fees/`,
+    inputFormat:
+      "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+    outputFormat:
+      "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat",
+    serDeInfo: {
+      name: "ParquetHiveSerDe",
+      serializationLibrary:
+        "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
+    },
+    columns: [
+      { name: "merchant_id", type: "string" },
+      { name: "payment_type", type: "string" },
+      { name: "fee_percentage", type: "decimal(18,4)" },
+      { name: "fee_flat", type: "decimal(18,4)" },
     ],
   },
 });
@@ -203,6 +235,7 @@ const aggregationStateMachine = new aws.sfn.StateMachine(
                 "States.Format(\
 SELECT \
     acquirer, \
+    merchant_id, \
     payment_type, \
     SUM(CASE WHEN type = 'settled'             THEN net_credit ELSE 0 END) AS settled, \
     SUM(CASE WHEN type = 'refunded'            THEN net_debit  ELSE 0 END) AS refunded, \
@@ -210,7 +243,7 @@ SELECT \
     SUM(CASE WHEN type = 'chargeback_reversal' THEN net_credit ELSE 0 END) AS chargeback_reversals \
 FROM settlements.clean_zone \
 WHERE acquirer = '{}' \
-GROUP BY acquirer, payment_type;, $.acquirer)",
+GROUP BY acquirer, merchant_id, payment_type;, $.acquirer)",
               WorkGroup: "primary",
               ResultConfiguration: {
                 "OutputLocation.$": `States.Format('s3://${bucketName}/output/aggregates/acquirer={}/', $.acquirer)`,
@@ -245,19 +278,24 @@ const feeStateMachine = new aws.sfn.StateMachine(
               "QueryString.$":
                 "States.Format(\
 SELECT \
-    acquirer, \
-    payment_type, \
-    SUM(CASE WHEN type = 'settled'  THEN net_credit ELSE 0 END) AS settled, \
-    SUM(CASE WHEN type = 'refunded' THEN net_debit  ELSE 0 END) AS refunded, \
-    SUM(CASE WHEN type = 'settled' \
-        THEN CAST(net_credit * CAST(0.03 AS DECIMAL(18,2)) AS DECIMAL(18,2)) \
+    cz.acquirer, \
+    cz.merchant_id, \
+    cz.payment_type, \
+    SUM(CASE WHEN cz.type = 'settled'  THEN cz.net_credit ELSE 0 END) AS settled, \
+    SUM(CASE WHEN cz.type = 'refunded' THEN cz.net_debit  ELSE 0 END) AS refunded, \
+    SUM(CASE WHEN cz.type = 'settled' \
+        THEN CAST(cz.net_credit * COALESCE(mf.fee_percentage, CAST(0 AS DECIMAL(18,4))) + COALESCE(mf.fee_flat, CAST(0 AS DECIMAL(18,4))) AS DECIMAL(18,4)) \
         ELSE 0 END) AS fee_on_settled, \
-    SUM(CASE WHEN type = 'refunded' \
-        THEN CAST(net_debit * CAST(0.03 AS DECIMAL(18,2)) AS DECIMAL(18,2)) \
+    SUM(CASE WHEN cz.type = 'refunded' \
+        THEN CAST(cz.net_debit * COALESCE(mf.fee_percentage, CAST(0 AS DECIMAL(18,4))) + COALESCE(mf.fee_flat, CAST(0 AS DECIMAL(18,4))) AS DECIMAL(18,4)) \
         ELSE 0 END) AS fee_on_refunded \
-FROM settlements.clean_zone \
-WHERE acquirer = '{}' \
-GROUP BY acquirer, payment_type;, $.acquirer)",
+FROM settlements.clean_zone cz \
+LEFT JOIN settlements.merchant_fees mf \
+  ON cz.acquirer = mf.acquirer \
+  AND cz.merchant_id = mf.merchant_id \
+  AND cz.payment_type = mf.payment_type \
+WHERE cz.acquirer = '{}' \
+GROUP BY cz.acquirer, cz.merchant_id, cz.payment_type, mf.fee_percentage, mf.fee_flat;, $.acquirer)",
               WorkGroup: "primary",
               ResultConfiguration: {
                 "OutputLocation.$": `States.Format('s3://${bucketName}/output/fees/acquirer={}/', $.acquirer)`,
@@ -269,7 +307,7 @@ GROUP BY acquirer, payment_type;, $.acquirer)",
       }),
     ),
   },
-  { dependsOn: [cleanZoneTable] },
+  { dependsOn: [cleanZoneTable, merchantFeesTable] },
 );
 
 export const rawBucketName = rawBucket.bucket;

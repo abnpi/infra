@@ -17,6 +17,7 @@ def handler(event, context):
 
         # 1. Map exactly to Adyen headers
         use_cols = [
+            "Merchant Account",
             "Payment Method",
             "Type",
             "Net Credit (NC)",
@@ -36,6 +37,7 @@ def handler(event, context):
             # 4. Rename columns to match the clean Glue/Athena schema
             df = df.rename(
                 columns={
+                    "Merchant Account": "merchant_id",
                     "Payment Method": "payment_type",
                     "Type": "type",
                     "Net Credit (NC)": "net_credit",
@@ -65,6 +67,7 @@ def handler(event, context):
                 path=output_path,
                 dataset=True,
                 dtype={
+                    "merchant_id": "string",
                     "net_credit": "decimal(19,4)",
                     "net_debit": "decimal(19,4)",
                 },

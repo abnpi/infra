@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,143 +6,244 @@ datasource db {
   provider = "postgresql"
 }
 
-enum VirtualAccountOwnerType {
-  MERCHANT
-  INFINITE
+enum UnmatchedMerchantRecordStatus {
+  UNMATCHED
+  REPROCESSED
+  IGNORED
 }
 
-model VirtualAccountOwner {
-  id         String                  @id @default(uuid())
-  merchantId String // Mocked UUID - will eventually come from InfinitePay DB
-  reference  String // Refers to ID from settlement file
-  name       String
-  type       VirtualAccountOwnerType
-
-  virtualAccounts VirtualAccount[]
-
-  @@map("virtual_account_owners")
+enum AccountType {
+  INBOUND
+  CHARGEBACK
+  CHARGEBACK_REVERSAL
+  FEES
+  SETTLEMENT
+  CLEARING_FUNDING
+  PRODUCT_FEES
+  CLEARING
 }
 
-// Mocking Merchant to satisfy relations
-model Merchant {
-  id                 Int                 @id @default(autoincrement())
-  virtualAccounts    VirtualAccount[]
-  settlementRequests SettlementRequest[]
-
-  @@map("merchants")
-}
-
-enum VirtualAccountType {
-  MERCHANT_INBOUND
-  MERCHANT_FEES
-  MERCHANT_CHARGEBACKS
-  MERCHANT_CB_REVERSAL
-  MERCHANT_SETTLEMENT
-  INFINITE_SETTLEMENT
-  SYSTEM_PAYOUT_TRANSIT // The platform liability vault for funds in flight
-}
-
-model VirtualAccount {
-  id             String               @id @default(uuid())
-  merchantId     Int? // Remains null for SYSTEM_PAYOUT_TRANSIT and INFINITE accounts
-  merchant       Merchant?            @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  ownerId        String?
-  owner          VirtualAccountOwner? @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  type           VirtualAccountType
-  currency       String               @db.Char(3)
-  currentBalance Decimal              @default(0.00) @db.Decimal(19, 4)
-
-  entries LedgerEntry[]
-
-  @@unique([merchantId, type, currency])
-  @@map("virtual_accounts")
+enum AccountStatus {
+  ACTIVE
+  ON_HOLD
 }
 
 enum TransactionStatus {
   PENDING
-  SETTLED
-  REFUSED
-  FAILED
+  SUCCESS
+  REJECTED
 }
 
-// The Stateful Workflow Wrapper
-model LedgerTransaction {
-  id              String            @id @default(uuid())
-  transactionType String // e.g., "SETTLEMENT_PAYOUT", "SETTLEMENT_REVERSAL"
-  referenceId     String?
-  description     String?
-  status          TransactionStatus @default(PENDING)
-  currency        String            @db.Char(3)
-
-  // Link to the external Settlement Request (a single request can own multiple transactions)
-  settlementRequestId String?
-  settlementRequest   SettlementRequest? @relation(fields: [settlementRequestId], references: [id], onDelete: Restrict)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  entries LedgerEntry[]
-
-  @@index([referenceId])
-  @@index([status])
-  @@index([settlementRequestId])
-  @@map("ledger_transactions")
+enum EntityType {
+  MERCHANT
+  INTERNAL // e.g. "Infinites" virtual accounts
 }
 
-enum EntryDirection {
+enum LedgerEntrySide {
   CREDIT
   DEBIT
 }
 
-// The Immutable Financial Truth
+enum TransactionType {
+  INBOUND_PAYMENT
+  REFUND
+  CHARGEBACK
+  FEE_PAYMENT
+  CHARGEBACK_REVERSAL
+  ADJUSTMENT
+  CLEARING_TRANSFER
+  SETTLEMENT_TRANSFER
+  FUNDING_TRANSFER
+  NETTING_TRANSFER
+  PAYOUT_TRANSFER
+}
+
+model Transaction {
+  id                      String            @id @default(uuid(7))
+  externalSourceReference String           @unique @map("external_source_reference") @db.VarChar(128) // Unique key to avoid duplicate transactions
+  reference               String?           @db.VarChar(128) // Optional human-readable reference or description
+  currency                String            @db.Char(3)
+  type                    TransactionType
+  status                  TransactionStatus @default(PENDING)
+  failureCode             String?           @map("failure_code") @db.VarChar(50)
+  failureMessage          String?           @map("failure_message") @db.VarChar(255)
+  transactionDate         DateTime          @map("transaction_date") @db.Date
+
+  parentTransactionId String?       @map("parent_transaction_id") @db.VarChar(36)
+  parentTransaction   Transaction?  @relation("TxParentChild", fields: [parentTransactionId], references: [id])
+  childTransactions   Transaction[] @relation("TxParentChild")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([parentTransactionId])
+  @@map("transactions")
+}
+
+model VirtualAccount {
+  id       String @id @default(uuid(7))
+  currency String @db.Char(3)
+
+  accountType     AccountType   @map("account_type")
+  acquirerId      String        @default("INTERNAL") @map("acquirer_id") @db.VarChar(36)
+  masterAccountId String        @map("master_account_id") @db.VarChar(36)
+  masterAccount   MasterAccount @relation(fields: [masterAccountId], references: [id])
+
+  // Current snapshots for quick lookups
+  currentBalance Decimal       @default(0) @map("current_balance") @db.Decimal(18, 4)
+  status         AccountStatus @default(ACTIVE)
+  negativeBalanceSince DateTime? @map("negative_balance_since") @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  ledgerEntries LedgerEntry[]
+
+  @@unique([acquirerId, masterAccountId, currency, accountType], map: "virtual_accounts_acq_id_master_account_id_curr_type_key")
+  @@map("virtual_accounts")
+}
+
 model LedgerEntry {
-  id String @id @default(uuid())
+  id            String         @id @default(uuid(7))
+  accountId     String         @map("account_id")
+  account       VirtualAccount @relation(fields: [accountId], references: [id])
+  transactionId String         @map("transaction_id") @db.VarChar(36)
+  transaction   Transaction    @relation(fields: [transactionId], references: [id])
 
-  transactionId String
-  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  description String?         @db.VarChar(255)
+  side        LedgerEntrySide
+  amount      Decimal         @db.Decimal(18, 4)
 
-  virtualAccountId String
-  virtualAccount   VirtualAccount @relation(fields: [virtualAccountId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @map("created_at")
 
-  direction    EntryDirection
-  amount       Decimal        @db.Decimal(19, 4)
-  currency     String         @db.Char(3)
-  balanceAfter Decimal        @db.Decimal(19, 4)
-
-  createdAt DateTime @default(now()) // NO updatedAt allowed here
-
-  @@index([virtualAccountId])
-  @@index([transactionId])
-  @@index([createdAt])
-  @@index([currency])
+  @@unique([transactionId, accountId, side])
+  @@index([accountId])
   @@map("ledger_entries")
 }
 
-enum SettlementStatus {
+model UnmatchedMerchantRecord {
+  id String @id @default(uuid(7))
+
+  // Data from the settlement file (Daily Movement Report)
+  transactionDate DateTime @map("transaction_date") @db.Date
+  acquirerName    String   @map("acquirer_name") @db.VarChar(128)
+  acquirerId      String   @map("acquirer_id") @db.VarChar(36)
+  mid             String   @db.VarChar(36)
+  merchantName    String   @map("merchant_name") @db.VarChar(255)
+  currency        String   @db.Char(3)
+  movementType    String   @map("movement_type") @db.VarChar(64)
+  amount          Decimal  @db.Decimal(18, 4)
+
+  // Audit & traceability
+  status                   UnmatchedMerchantRecordStatus @default(UNMATCHED)
+  ingestionDate            DateTime                      @default(now()) @map("ingestion_date")
+  reprocessingDate         DateTime?                     @map("reprocessing_date")
+  settlementBatchReference String?                       @map("settlement_batch_reference") @db.VarChar(128)
+  masterAccountId          String?                       @map("master_account_id") @db.VarChar(36)
+  masterAccount            MasterAccount?                @relation(fields: [masterAccountId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([mid, status])
+  @@index([settlementBatchReference])
+  @@index([transactionDate])
+  @@map("unmatched_merchant_records")
+}
+
+model MasterAccount {
+  id                       String                    @id @default(uuid(7))
+  mid                      String?                   @unique @db.VarChar(36)
+  type                     EntityType
+  name                     String                    @db.VarChar(255)
+  unmatchedMerchantRecords UnmatchedMerchantRecord[]
+  virtualAccounts          VirtualAccount[]
+
+  @@map("master_accounts")
+}
+
+/// Maps raw settlement-file acquirer codes (e.g. "WP_PRESENTER", "A_003") to the
+/// corresponding Acquirer record in the gateway/buddy database.
+/// Managed by ops — a new row is inserted whenever a new acquirer is onboarded.
+model AcquirerMapping {
+  id                Int      @id @default(autoincrement())
+  /// The raw code exactly as it appears in the settlement file's acquirer field.
+  settlementCode    String   @unique @map("settlement_code") @db.VarChar(64)
+  /// The integer primary key of the matching Acquirer row in the gateway database.
+  gatewayAcquirerId Int      @map("gateway_acquirer_id")
+  /// Human-readable acquirer name — stored for debugging and audit; not used for lookups.
+  acquirerName      String   @map("acquirer_name") @db.VarChar(191)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([settlementCode])
+  @@map("acquirer_mappings")
+}
+
+// This tables use case needs further clarification.
+model VirtualMerchantProductFeesAccount {
+  id String @id @default(uuid(7))
+
+  acquirerId   String @map("acquirer_id") @db.VarChar(36)
+  acquirerName String @map("acquirer_name") @db.VarChar(128)
+  merchantId   String @map("merchant_id") @db.VarChar(36)
+  merchantName String @map("merchant_name") @db.VarChar(255)
+
+  currency       String   @db.Char(3)
+  description    String   @db.VarChar(64)
+  processingDate DateTime @map("processing_date") @db.Date
+
+  debit  Decimal @db.Decimal(18, 4)
+  credit Decimal @db.Decimal(18, 4)
+  total  Decimal @db.Decimal(18, 4)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@unique([acquirerId, merchantId, currency, processingDate, description], map: "vmerchant_prod_fees_acq_mid_curr_date_desc_key")
+  @@index([processingDate])
+  @@map("virtual_merchant_product_fees_account")
+}
+
+enum SettlementPipelineStage {
+  SETTLEMENT_FILE_UPLOAD
+  SETTLEMENT_FILE_INGESTION
+  DAILY_MOVEMENT_PROCESSING
+  MERCHANT_SETTLEMENT
+  INFINITE_SETTLEMENT
+  DAILY_MERCHANT_HELD_REPORT
+  MERCHANT_DEFICIT_REPORT
+}
+
+enum SettlementProcessingStatus {
   PENDING
-  SUBMITTED
+  PROCESSING
   COMPLETED
-  REJECTED
   FAILED
 }
 
-// The External Banking IO State
-model SettlementRequest {
-  id String @id @default(uuid())
+model SettlementProcessingStage {
+  id       String  @id @default(uuid(7))
+  parentId String? @map("parent_id")
+  rootId   String  @map("root_id")
 
-  merchantId Int?
-  merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  stage  SettlementPipelineStage
+  status SettlementProcessingStatus @default(PENDING)
 
-  amount   Decimal          @db.Decimal(19, 4)
-  currency String           @db.Char(3)
-  status   SettlementStatus @default(PENDING)
+  s3Key      String? @map("s3_key")
+  retryCount Int     @default(0) @map("retry_count")
 
-  transactions LedgerTransaction[]
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
+  completedAt DateTime? @map("completed_at")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  parent   SettlementProcessingStage?  @relation("SettlementProcessingStageHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children SettlementProcessingStage[] @relation("SettlementProcessingStageHierarchy")
 
-  @@index([merchantId])
-  @@index([status])
-  @@map("settlement_requests")
+  @@index([parentId])
+  @@index([rootId])
+  @@map("settlement_processing_stage")
 }
