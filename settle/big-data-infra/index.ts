@@ -68,6 +68,23 @@ const adyenAdapterLambda = new aws.lambda.Function("adyen-adapter", {
   },
 });
 
+const worldlineAdapterLambda = new aws.lambda.Function("worldline-adapter", {
+  role: lambdaRole.arn,
+  runtime: "python3.11",
+  handler: "index.handler",
+  memorySize: 3008,
+  timeout: 900,
+  layers: [pandasLayerArn],
+  code: new pulumi.asset.AssetArchive({
+    "index.py": new pulumi.asset.FileAsset("./adapters/worldline/index.py"),
+  }),
+  environment: {
+    variables: {
+      CLEAN_BUCKET: cleanBucket.bucket,
+    },
+  },
+});
+
 // 4. Trigger: Invoke Lambda when a .csv file is uploaded
 new aws.s3.BucketNotification(
   "raw-arrival",
@@ -80,14 +97,27 @@ new aws.s3.BucketNotification(
         filterPrefix: "acquirer=adyen/",
         filterSuffix: ".csv",
       },
+      {
+        lambdaFunctionArn: worldlineAdapterLambda.arn,
+        events: ["s3:ObjectCreated:*"],
+        filterPrefix: "acquirer=worldline/",
+        filterSuffix: ".csv",
+      },
     ],
   },
-  { dependsOn: [adyenAdapterLambda] },
+  { dependsOn: [adyenAdapterLambda, worldlineAdapterLambda] },
 );
 
 new aws.lambda.Permission("s3-adyen-trigger-permission", {
   action: "lambda:InvokeFunction",
   function: adyenAdapterLambda.name,
+  principal: "s3.amazonaws.com",
+  sourceArn: rawBucket.arn,
+});
+
+new aws.lambda.Permission("s3-worldline-trigger-permission", {
+  action: "lambda:InvokeFunction",
+  function: worldlineAdapterLambda.name,
   principal: "s3.amazonaws.com",
   sourceArn: rawBucket.arn,
 });
